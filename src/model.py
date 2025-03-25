@@ -1,5 +1,7 @@
+import timm
+import torch
 import torch.nn as nn
-from torchvision import models
+import torchvision
 
 
 class ModifiedResNet(nn.Module):
@@ -8,75 +10,45 @@ class ModifiedResNet(nn.Module):
 
         # Load the specified ResNet version with proper weights parameter
         if resnet_version == 18:
-            if pretrained:
-                weights = models.ResNet18_Weights.DEFAULT
-            else:
-                weights = None
-            base_model = models.resnet18(weights=weights)
+            self.base_model = timm.create_model("resnet18", pretrained=pretrained)
             feature_dim = 512
         elif resnet_version == 34:
-            if pretrained:
-                weights = models.ResNet34_Weights.DEFAULT
-            else:
-                weights = None
-            base_model = models.resnet34(weights=weights)
+            self.base_model = timm.create_model("resnet34", pretrained=pretrained)
             feature_dim = 512
         elif resnet_version == 50:
-            if pretrained:
-                weights = models.ResNet50_Weights.DEFAULT
-            else:
-                weights = None
-            base_model = models.resnet50(weights=weights)
+            self.base_model = timm.create_model("resnet50", pretrained=pretrained)
+            feature_dim = 2048
+        elif resnet_version == 101:
+            self.base_model = torchvision.models.resnext101_32x8d(
+                weights=torchvision.models.ResNeXt101_32X8D_Weights.IMAGENET1K_V2
+            )
+            feature_dim = self.base_model.fc.in_features
+        elif resnet_version == 152:
+            self.base_model = timm.create_model("resnet152", pretrained=pretrained)
             feature_dim = 2048
         else:
             raise ValueError(f"Unsupported ResNet version: {resnet_version}")
 
-        # Use all layers except the last one (avg pool and fc)
-        self.features = nn.Sequential(*list(base_model.children())[:-2])
+        for param in self.base_model.parameters():
+            param.requires_grad = True
 
-        # Keep the same structure as the original attention module for
-        # compatibility
-        self.attention = nn.Sequential(
-            nn.Conv2d(feature_dim, feature_dim // 8, kernel_size=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(feature_dim // 8, feature_dim, kernel_size=1),
-            nn.Sigmoid(),
-        )
-
-        # Global average pooling
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-
-        # Improved classifier with same structure but better dropout
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(feature_dim, 1024),
-            nn.BatchNorm1d(1024),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
-            nn.Linear(1024, 512),
+        self.base_model.fc = nn.Sequential(
+            nn.Dropout(0.3),  # Start with dropout to prevent overfitting
+            nn.Linear(feature_dim, 512),
+            nn.ReLU(),
             nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.4),
+            nn.Dropout(0.5),
             nn.Linear(512, num_classes),
         )
 
-        # Initialize classifier weights properly
-        for m in self.classifier.modules():
+        for m in self.base_model.fc.modules():
             if isinstance(m, nn.Linear):
                 nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm1d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
-        x = self.features(x)
-        att = self.attention(x)
-        x = x * att
-        x = self.avg_pool(x)
-        x = self.classifier(x)
-        return x
+        return self.base_model(x)
 
 
 def count_parameters(model):
@@ -104,6 +76,9 @@ def create_model(num_classes, resnet_version, pretrained, device):
         pretrained=pretrained,
         resnet_version=resnet_version,
     ).to(device)
+
+    # Clear unused memory
+    torch.cuda.empty_cache()
 
     num_params = count_parameters(model)
     print(f"Model has {num_params:,} trainable parameters")
