@@ -18,6 +18,8 @@ def train_model(
     Train the model.
     """
     best_val_acc = 0.0
+    best_val_loss = float("inf")
+    min_delta = 1e-5
     history = {
         "train_loss": [],
         "val_loss": [],
@@ -60,6 +62,7 @@ def train_model(
                     loss = criterion(outputs, labels)
 
                 scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
 
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
@@ -82,13 +85,12 @@ def train_model(
 
             pbar.set_postfix({"loss": loss.item(), "acc": correct / total})
 
-        if not isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            scheduler.step()
-
         epoch_loss = running_loss / len(train_loader.dataset)
         epoch_acc = correct / total
         history["train_loss"].append(epoch_loss)
         history["train_acc"].append(epoch_acc)
+
+        scheduler.step(epoch_loss)
 
         # Validation phase
         model.eval()
@@ -99,14 +101,12 @@ def train_model(
         pbar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]")
 
         with torch.no_grad():
-            for inputs, labels in pbar:
+            for batch_idx, (inputs, labels) in enumerate(pbar):
                 inputs, labels = inputs.to(device), labels.to(device)
 
-                if use_mixed_precision and device.type == "cuda":
-                    with torch.autocast(device_type=device.type):
-                        outputs = model(inputs)
-                        loss = criterion(outputs, labels)
-                else:
+                with torch.autocast(
+                    device_type=device.type, enabled=use_mixed_precision
+                ):
                     outputs = model(inputs)
                     loss = criterion(outputs, labels)
 
@@ -115,33 +115,35 @@ def train_model(
                 val_total += labels.size(0)
                 val_correct += (predicted == labels).sum().item()
 
-                pbar.set_postfix({"loss": loss.item(), "acc": val_correct / val_total})
+                pbar.set_postfix(
+                    {
+                        "loss": val_loss / ((batch_idx + 1) * inputs.size(0)),
+                        "acc": val_correct / val_total,
+                    }
+                )
 
         val_epoch_loss = val_loss / len(val_loader.dataset)
         val_epoch_acc = val_correct / val_total
         history["val_loss"].append(val_epoch_loss)
         history["val_acc"].append(val_epoch_acc)
 
-        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            scheduler.step(val_epoch_loss)
-
-        print(
-            f"Epoch {epoch+1}/{num_epochs}: "
-            f"Train Loss: {epoch_loss:.4f}, Train Acc: {epoch_acc:.4f}, "
-            f"Val Loss: {val_epoch_loss:.4f}, Val Acc: {val_epoch_acc:.4f}, "
-            f"LR: {current_lr:.6f}"
-        )
-
-        # Save best model (by validation accuracy)
-        if val_epoch_acc > best_val_acc:
-            best_val_acc = val_epoch_acc
-            torch.save(model.state_dict(), model_save_path)
-            print(f"New best model saved! Val Acc: {best_val_acc:.4f}")
+        # Improved early stopping logic
+        if val_epoch_loss < (best_val_loss - min_delta):
+            best_val_loss = val_epoch_loss
             early_stop_counter = 0
+            if val_epoch_acc > best_val_acc:
+                best_val_acc = val_epoch_acc
+                torch.save(model.state_dict(), model_save_path)
+                print(
+                    f"Best model saved! Acc: {best_val_acc:.4f}, "
+                    f"Loss: {val_epoch_loss:.4f}"
+                )
         else:
             early_stop_counter += 1
             if early_stop_counter >= patience:
                 print(f"Early stopping triggered after {epoch+1} epochs")
                 break
+
+        scheduler.step(val_epoch_loss)
 
     return history
