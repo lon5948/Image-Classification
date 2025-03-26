@@ -28,3 +28,5 @@ else:
 # Output paths
 MODEL_SAVE_PATH = "best_model.pth"
 TRAIN_CURVES_PATH = "training_curves.png"
+CONFUSION_MATRIX_PATH = "confusion_matrix.png"
+CLASS_ACCURACIES_PATH = "class_accuracies.png"
