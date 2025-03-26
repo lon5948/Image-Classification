@@ -46,11 +46,10 @@ def parse_args():
         help="Number of epochs to train when resuming (defaults to original setting)",
     )
     parser.add_argument(
-        "--learning_rate",
+        "--lr",
         type=float,
         default=None,
-        help="Learning rate when resuming training "
-        "(defaults to original setting * 0.1)",
+        help="Learning rate when resuming training (defaults to original setting)",
     )
     parser.add_argument(
         "--output",
@@ -86,14 +85,7 @@ def main():
 
         epochs_to_train = args.epochs if args.epochs else NUM_EPOCHS
 
-        if args.mode == "resume":
-            if args.learning_rate:
-                learning_rate = args.learning_rate
-            else:
-                learning_rate = LEARNING_RATE * 0.1
-            print(f"Resuming with learning rate: {learning_rate}")
-        else:
-            learning_rate = LEARNING_RATE
+        learning_rate = args.lr if args.lr else LEARNING_RATE
 
         criterion = nn.CrossEntropyLoss()
 
@@ -101,17 +93,9 @@ def main():
             model.parameters(), lr=learning_rate, weight_decay=WEIGHT_DECAY
         )
 
-        # For resume mode, use cosine annealing scheduler which works better
-        # for fine-tuning
-        if args.mode == "resume":
-            scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=epochs_to_train, eta_min=learning_rate / 10
-            )
-        else:
-            # Keep the original scheduler for new training
-            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode="min", factor=0.1, patience=3
-            )
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=3
+        )
 
         print("Starting training...")
         history = train_model(
